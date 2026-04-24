@@ -32,6 +32,11 @@ class RunnerConfig:
     allow_public_reason: str | None = None
     session_mode: str = "isolated"  # "isolated" | "fast"
     cleanup_tokens: bool = True
+    # Browser driver used to bootstrap a live AuthSession when a check calls
+    # ctx.ensure_session(). None means "no session available; session-dependent
+    # sub-findings just won't fire".
+    driver: Any = None
+    bootstrap_scope: str = "openid"
 
 
 def _order_for_session_mode(checks: list[Check], mode: str) -> list[Check]:
@@ -142,6 +147,12 @@ async def run(ctx: Context, cfg: RunnerConfig) -> Report:
         selected=[c.id for c in selected],
     )
 
+    # Build a session factory that lazy-bootstraps once via the configured
+    # driver. Checks call `await ctx.ensure_session()`. If no driver was
+    # passed in cfg, the factory stays None and ensure_session returns None.
+    if cfg.driver is not None and ctx.client is not None and ctx.session_factory is None:
+        ctx.session_factory = _make_session_factory(ctx, cfg)
+
     selected = _order_for_session_mode(selected, cfg.session_mode)
     tags = ctx.capabilities.capability_tags()
     records: list[CheckRecord] = []
@@ -179,6 +190,29 @@ async def run(ctx: Context, cfg: RunnerConfig) -> Report:
         n_checks=len(records),
     )
     return report
+
+
+def _make_session_factory(ctx: Context, cfg: RunnerConfig):
+    """Return an async closure that bootstraps once and caches the session.
+
+    Failures during bootstrap are logged and swallowed -- checks that need a
+    live session should degrade gracefully when ensure_session() returns None.
+    """
+    cached: dict[str, Any] = {}
+
+    async def factory(*, scope: str = cfg.bootstrap_scope, fresh: bool = False):
+        if not fresh and "session" in cached:
+            return cached["session"]
+        try:
+            session = await cfg.driver.bootstrap(ctx.client, scope=scope)
+        except Exception as e:  # noqa: BLE001
+            ctx.log.warning("runner.bootstrap_failed", error=f"{type(e).__name__}: {e}")
+            cached["session"] = None
+            return None
+        cached["session"] = session
+        return session
+
+    return factory
 
 
 def make_logger(tenant_id: str) -> structlog.stdlib.BoundLogger:

@@ -160,6 +160,17 @@ def test(
     disabled: Annotated[str, typer.Option("--disabled", help="Comma-separated check ids.")] = "",
     per_check_timeout_s: Annotated[float, typer.Option("--timeout")] = 30.0,
     session_mode: Annotated[str, typer.Option("--session-mode")] = "isolated",
+    browser: Annotated[
+        str,
+        typer.Option(
+            "--browser",
+            help=(
+                "How to acquire a live AuthSession for session-dependent checks: "
+                "'none' (default, skip session checks), 'manual' (paste callback), "
+                "'refresh' (manual once, cache RT), 'playwright' (needs [browser] extra)."
+            ),
+        ),
+    ] = "none",
     no_cleanup: Annotated[
         bool,
         typer.Option(
@@ -242,6 +253,20 @@ def test(
                 log=log,
                 client=client,
             )
+            driver = None
+            if browser != "none":
+                from .browser import BrowserError, build_driver
+                from .browser.refresh import RefreshDriver
+
+                try:
+                    if browser == "refresh":
+                        driver = RefreshDriver(tenant_id=tenant_id or "")
+                    else:
+                        driver = build_driver(browser)
+                except BrowserError as e:
+                    typer.secho(f"browser init failed: {e}", fg=typer.colors.RED, err=True)
+                    return 2
+
             cfg = RunnerConfig(
                 tenant_id=tenant_id or "",
                 enabled=[c.strip() for c in checks.split(",") if c.strip()],
@@ -252,6 +277,7 @@ def test(
                 allow_public_reason=reason,
                 session_mode=session_mode,
                 cleanup_tokens=not no_cleanup,
+                driver=driver,
             )
             report = await run(ctx, cfg)
 
