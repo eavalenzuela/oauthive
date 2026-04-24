@@ -1,14 +1,9 @@
-"""Run-scoped Context passed to every check.
-
-Fields populated by later milestones (AuthSession, MaliciousRP) are held as
-Optional[Any] for now so the type surface is stable while those modules are
-built out.
-"""
+"""Run-scoped Context passed to every check."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 import httpx
 import structlog
@@ -24,13 +19,21 @@ class Context:
     capabilities: CapabilitiesReport
     http: httpx.AsyncClient
     log: structlog.stdlib.BoundLogger
-    # Filled in by later milestones. Typed as Any so their modules own the type.
     session: Any = None
     client: Any = None
     malicious_rp: Any = None
     saml_metadata: Any = None
     config: Any = None
-    # Callable that yields an AuthSession. In isolated mode, mints fresh
-    # every call; in fast mode, returns the shared one (or a fresh one if the
-    # check set requires_fresh_auth). Populated by the runner.
-    session_factory: Any = None
+    # Lazy bootstrap. Checks that need a live AuthSession call
+    # `await ctx.ensure_session()`. The runner populates session_factory
+    # with a coroutine; if None, ensure_session returns None and the check
+    # should downgrade its confidence or skip the session-dependent sub-probe.
+    session_factory: Callable[..., Awaitable[Any]] | None = None
+
+    async def ensure_session(self, *, scope: str = "openid", fresh: bool = False) -> Any:
+        if self.session_factory is None:
+            return None
+        if self.session is not None and not fresh:
+            return self.session
+        self.session = await self.session_factory(scope=scope, fresh=fresh)
+        return self.session
