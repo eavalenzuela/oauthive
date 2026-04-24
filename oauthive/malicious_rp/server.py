@@ -48,6 +48,7 @@ class CapturedRequest:
 class MaliciousRPState:
     captures: list[CapturedRequest] = field(default_factory=list)
     jwks: dict[str, Any] | None = None
+    sp_metadata_xml: bytes | None = None
 
 
 # starlette's request.state is per-request; store server-scoped state on the app.
@@ -111,12 +112,74 @@ async def _captures_view(request: Request) -> Response:
     return JSONResponse([asdict(c) for c in state.captures])
 
 
-async def _saml_metadata(_: Request) -> Response:
-    return Response("not yet implemented (M14)", status_code=503)
+async def _saml_metadata(request: Request) -> Response:
+    state: MaliciousRPState = request.app.state.oauthive  # type: ignore[attr-defined]
+    if state.sp_metadata_xml is None:
+        return Response("SP metadata not configured", status_code=404)
+    return Response(
+        state.sp_metadata_xml,
+        media_type="application/samlmetadata+xml",
+    )
 
 
 async def _saml_acs(request: Request) -> Response:
+    """ACS: capture the posted SAMLResponse. Parse shallowly for convenience
+    so the test / check that reads captures can see Issuer, NameID, audience
+    without re-parsing."""
+    state: MaliciousRPState = request.app.state.oauthive  # type: ignore[attr-defined]
+    if request.method == "POST":
+        form = await request.form()
+        cap = CapturedRequest(
+            method="POST",
+            path=request.url.path,
+            query={k: request.query_params.getlist(k) for k in request.query_params},
+            headers={k: v for k, v in request.headers.items()},
+            body=str(dict(form)),
+            remote=request.client.host if request.client else None,
+        )
+        # Parse SAMLResponse if present.
+        saml_response_b64 = form.get("SAMLResponse")
+        if saml_response_b64:
+            import base64 as _b64
+
+            try:
+                xml = _b64.b64decode(str(saml_response_b64))
+                from ..saml.sp import parse_response
+
+                parsed = parse_response(xml)
+                cap.body = (
+                    f"SAMLResponse parsed: issuer={parsed.issuer} "
+                    f"assertions={len(parsed.assertions)} "
+                    f"encrypted={parsed.encrypted_assertions} "
+                    f"signed={parsed.signed}"
+                )
+            except Exception as e:  # noqa: BLE001
+                cap.body = f"SAMLResponse present but unparseable: {e}"
+        state.captures.append(cap)
+        return HTMLResponse(
+            "<html><body><p>SAML capture received.</p></body></html>",
+            status_code=200,
+        )
     return await _capture(request)
+
+
+async def _saml_sls(request: Request) -> Response:
+    """SLO endpoint: capture LogoutRequest or LogoutResponse."""
+    state: MaliciousRPState = request.app.state.oauthive  # type: ignore[attr-defined]
+    body = (await request.body()).decode(errors="replace")
+    # HTTP-Redirect form uses GET with query params; POST binding posts form.
+    q = {k: request.query_params.getlist(k) for k in request.query_params}
+    state.captures.append(
+        CapturedRequest(
+            method=request.method,
+            path=request.url.path,
+            query=q,
+            headers={k: v for k, v in request.headers.items()},
+            body=body,
+            remote=request.client.host if request.client else None,
+        )
+    )
+    return HTMLResponse("<html><body>SLS captured.</body></html>")
 
 
 def build_app() -> Starlette:
@@ -129,6 +192,7 @@ def build_app() -> Starlette:
             Route("/captures", _captures_view, methods=["GET"]),
             Route("/saml/metadata", _saml_metadata, methods=["GET"]),
             Route("/saml/acs", _saml_acs, methods=["POST", "GET"]),
+            Route("/saml/sls", _saml_sls, methods=["POST", "GET"]),
         ]
     )
     app.state.oauthive = MaliciousRPState()  # type: ignore[attr-defined]
@@ -178,6 +242,9 @@ class MaliciousRP:
 
     def set_jwks(self, jwks: dict[str, Any]) -> None:
         self.state.jwks = jwks
+
+    def set_sp_metadata(self, xml: bytes) -> None:
+        self.state.sp_metadata_xml = xml
 
     def captures(self) -> list[CapturedRequest]:
         return list(self.state.captures)

@@ -47,9 +47,33 @@ add SPI shims to this realm in your own fork).
 
 ## Ports
 
-Keycloak binds to `127.0.0.1:8080` only. `KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD`
-default to `admin/admin`.
+| service  | host binding         | purpose                              |
+|----------|----------------------|--------------------------------------|
+| keycloak | `127.0.0.1:8080`     | OIDC + SAML IdP                      |
+| vuln-sp  | `127.0.0.1:8081`     | Deliberately-broken SAML SP for forge smoke tests |
 
-## Discovery URL
+Keycloak bootstrap admin: `admin / admin`.
 
-`http://localhost:8080/realms/oauthive-dev/.well-known/openid-configuration`
+## Discovery URLs
+
+- OIDC:              `http://localhost:8080/realms/oauthive-dev/.well-known/openid-configuration`
+- SAML IdP metadata: `http://localhost:8080/realms/oauthive-dev/protocol/saml/descriptor`
+
+## Vulnerable SAML SP
+
+`fixtures/vuln-sp/` builds a tiny Python SP with intentional bugs:
+
+- No signature verification
+- No audience restriction enforcement
+- No Recipient / InResponseTo binding
+- NameID extracted via textContent-style path (comment injection lands)
+- No NotBefore / NotOnOrAfter enforcement
+
+Exists so `oauthive saml forge --attack <X> | curl -d @- http://127.0.0.1:8081/acs`
+always confirms the forge actually produced a SP-accepted payload.
+
+### Keycloak SAML client
+
+Client `http://vuln-sp.oauthive.test/saml/sp` is registered for the vuln-sp
+with `client.signature=false` and `server.signature=false`, matching its
+permissive posture.

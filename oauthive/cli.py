@@ -953,6 +953,13 @@ def fixture_demo(
     redirect_uri: Annotated[
         str, typer.Option("--redirect-uri")
     ] = "https://app.example.test/cb",
+    saml: Annotated[
+        bool,
+        typer.Option(
+            "--saml/--no-saml",
+            help="Also run the SAML check suite against Keycloak's SAML IdP.",
+        ),
+    ] = True,
     strict: Annotated[
         bool,
         typer.Option(
@@ -969,12 +976,24 @@ def fixture_demo(
 
     import httpx
 
-    from .capabilities import CapabilitiesReport, derive_from_discovery
+    from .capabilities import (
+        CapabilitiesReport,
+        derive_from_discovery,
+        derive_from_saml_metadata,
+    )
     from .client import OAuthClient
     from .context import Context
     from .discovery import DiscoveryError, fetch_discovery
-    from .fixture import DISCOVERY_URL, EXPECTED_FINDING_IDS, FixtureError, wait_for_ready
+    from .fixture import (
+        DISCOVERY_URL,
+        EXPECTED_FINDING_IDS,
+        EXPECTED_SAML_FINDING_IDS,
+        FixtureError,
+        SAML_METADATA_URL,
+        wait_for_ready,
+    )
     from .runner import RunnerConfig, make_logger, run as run_checks
+    from .saml.metadata import SAMLMetadataError, parse_metadata
 
     async def _go() -> int:
         try:
@@ -988,7 +1007,26 @@ def fixture_demo(
             typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
             return 1
 
+        saml_md = None
+        if saml:
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                try:
+                    r = await c.get(
+                        SAML_METADATA_URL,
+                        headers={"Accept": "application/samlmetadata+xml, application/xml, */*"},
+                    )
+                    r.raise_for_status()
+                    saml_md = parse_metadata(r.content, source_url=SAML_METADATA_URL)
+                except (httpx.HTTPError, SAMLMetadataError) as e:
+                    typer.secho(
+                        f"saml metadata fetch failed: {e}", fg=typer.colors.YELLOW
+                    )
+                    saml_md = None
+
         caps = CapabilitiesReport(oidc=derive_from_discovery(doc))
+        if saml_md is not None:
+            caps.saml = derive_from_saml_metadata(saml_md)
+
         async with httpx.AsyncClient(timeout=15.0) as http:
             client = OAuthClient(
                 discovery=doc,
@@ -1003,6 +1041,7 @@ def fixture_demo(
                 http=http,
                 log=make_logger("oauthive-fixture"),
                 client=client,
+                saml_metadata=saml_md,
             )
             cfg = RunnerConfig(
                 tenant_id="oauthive-fixture",
@@ -1018,7 +1057,10 @@ def fixture_demo(
 
         if strict:
             got = {f.id for c in report.checks for f in c.findings}
-            missing = EXPECTED_FINDING_IDS - got
+            expected = set(EXPECTED_FINDING_IDS)
+            if saml_md is not None:
+                expected |= EXPECTED_SAML_FINDING_IDS
+            missing = expected - got
             if missing:
                 typer.secho(
                     f"\nfixture demo: expected findings missing: {sorted(missing)}",

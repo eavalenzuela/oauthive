@@ -85,6 +85,27 @@
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
       }
+    },
+    {
+      "clientId": "http://vuln-sp.oauthive.test/saml/sp",
+      "name": "Intentionally-vulnerable SAML SP",
+      "enabled": true,
+      "protocol": "saml",
+      "adminUrl": "http://127.0.0.1:8081",
+      "baseUrl": "http://127.0.0.1:8081",
+      "redirectUris": [
+        "http://127.0.0.1:8081/acs"
+      ],
+      "attributes": {
+        "saml.client.signature": "false",
+        "saml.authnstatement": "true",
+        "saml.force.post.binding": "true",
+        "saml.assertion.signature": "true",
+        "saml.server.signature": "false",
+        "saml_assertion_consumer_url_post": "http://127.0.0.1:8081/acs",
+        "saml_name_id_format": "email",
+        "saml_signature_canonicalization_method": "http://www.w3.org/2001/10/xml-exc-c14n#"
+      }
     }
   ]
 }

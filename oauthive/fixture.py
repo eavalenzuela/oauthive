@@ -24,11 +24,24 @@ def fixture_dir() -> Path:
 KEYCLOAK_BASE = "http://127.0.0.1:8080"
 REALM = "oauthive-dev"
 DISCOVERY_URL = f"{KEYCLOAK_BASE}/realms/{REALM}/.well-known/openid-configuration"
+SAML_METADATA_URL = f"{KEYCLOAK_BASE}/realms/{REALM}/protocol/saml/descriptor"
 HEALTH_URL = f"{KEYCLOAK_BASE}/health/ready"
+VULN_SP_BASE = "http://127.0.0.1:8081"
+VULN_SP_HEALTH = f"{VULN_SP_BASE}/health"
 EXPECTED_FINDING_IDS = {
     "pkce.not_required",
     "response_type.implicit_advertised",
     "response_type.implicit_token_issued",
+}
+EXPECTED_SAML_FINDING_IDS = {
+    # Keycloak serves SAML metadata unsigned by default and without validUntil
+    # in the generated descriptor.
+    "saml_assertion.metadata_unsigned",
+    "saml_metadata.valid_until_absent",
+    # Informational pointers always fire when metadata is present.
+    "saml_xsw.exercise_against_sp",
+    "saml_comment.exercise_against_sp",
+    "saml_xxe.exercise_against_idp",
 }
 
 

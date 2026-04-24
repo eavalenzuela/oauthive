@@ -16,3 +16,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  vuln-sp:
+    build: ./vuln-sp
+    container_name: oauthive-vuln-sp
+    ports:
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
