@@ -13,10 +13,8 @@ oauthive/saml/forge.py.
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 
 import defusedxml.ElementTree as DET
 from lxml import etree

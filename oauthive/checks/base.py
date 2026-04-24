@@ -1,7 +1,9 @@
 """Check interface and Finding type.
 
-See PLAN.md §Check interface. The runner (later milestone) loads checks, gates
-them on requires_capabilities, and respects parallel_safe + requires_fresh_auth.
+The runner in oauthive/runner.py loads Check instances, filters by
+requires_capabilities against the CapabilitiesReport, honors parallel_safe +
+requires_fresh_auth, and turns returned Findings into CheckRecord entries in
+the final Report.
 """
 
 from __future__ import annotations

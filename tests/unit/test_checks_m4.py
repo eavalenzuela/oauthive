@@ -6,14 +6,12 @@ asserts the corresponding finding id lands.
 
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
 
 import httpx
-import pytest
 import respx
 import structlog
 
-from oauthive.capabilities import CapabilitiesReport, OIDCCapabilities, derive_from_discovery
+from oauthive.capabilities import CapabilitiesReport, derive_from_discovery
 from oauthive.checks.nonce import NonceCheck
 from oauthive.checks.pkce import PKCECheck
 from oauthive.checks.response_type import ResponseTypeCheck
@@ -298,11 +296,10 @@ async def test_response_type_flags_advertised_implicit():
     async with httpx.AsyncClient() as http:
         ctx = await _build_ctx(doc, http)
         # Don't run the full check (probing won't mock cleanly here); just
-        # check the advertised-implicit finding lands synchronously.
-        findings: list = []
+        # confirm the advertised-implicit types show up in capabilities.
         advertised = set(ctx.capabilities.oidc.supported_response_types)
         implicit = advertised & {"token", "token id_token", "id_token token"}
-        assert implicit  # sanity: our doc does advertise implicit types
+        assert implicit
 
 
 @respx.mock

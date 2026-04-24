@@ -1,6 +1,5 @@
 import json
 
-import pytest
 
 from oauthive.report import html as html_report
 from oauthive.report import markdown as md_report

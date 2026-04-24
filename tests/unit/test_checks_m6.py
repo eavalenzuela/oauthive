@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 import respx
 import structlog
 
@@ -155,10 +154,8 @@ async def test_refresh_rotation_enforced_no_finding():
 @respx.mock
 async def test_refresh_cross_client_binding_weak():
     doc = _doc()
-    state = {"used": False}
 
     def token_handler(req: httpx.Request) -> httpx.Response:
-        body = req.content.decode()
         # Allow every call.
         return httpx.Response(
             200,

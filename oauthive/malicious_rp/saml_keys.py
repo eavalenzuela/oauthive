@@ -6,7 +6,6 @@ absent and no confirm callable is supplied, raises.
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,7 +85,9 @@ def cert_b64(paths: SAMLKeyPaths) -> str:
     # Strip PEM markers and whitespace.
     text = pem.decode()
     lines = [
-        l for l in text.splitlines() if l and "BEGIN CERTIFICATE" not in l and "END CERTIFICATE" not in l
+        ln
+        for ln in text.splitlines()
+        if ln and "BEGIN CERTIFICATE" not in ln and "END CERTIFICATE" not in ln
     ]
     return "".join(lines)
 

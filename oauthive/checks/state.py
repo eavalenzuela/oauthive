@@ -50,7 +50,6 @@ class StateCheck:
         # Build an authorization request without state. We can't use
         # probe_authorization because AuthorizationRequest auto-generates a
         # state; call the lower-level helper instead.
-        from ..client import AuthorizationRequest, send_authorization_request
 
         # Construct params manually to drop state.
         import secrets

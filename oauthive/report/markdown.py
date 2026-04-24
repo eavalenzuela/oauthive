@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from .html import SEVERITY_ORDER, STATUS_ORDER, _sort_key_for_check
+from .html import SEVERITY_ORDER, _sort_key_for_check
 from .redact import redact
 from .schema import Report
 
@@ -15,7 +15,7 @@ from .schema import Report
 def render(report: Report, *, no_cleanup_banner: bool = False) -> str:
     md = report.metadata
     out: list[str] = []
-    out.append(f"# oauthive report")
+    out.append("# oauthive report")
     out.append("")
     out.append(f"- tenant: `{md.tenant_id}`")
     if md.target_issuer:

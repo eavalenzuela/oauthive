@@ -5,14 +5,12 @@ from lxml import etree
 
 from oauthive.saml.bindings import (
     BINDING_POST,
-    BINDING_REDIRECT,
     decode_deflate_b64,
     encode_http_post,
     encode_http_redirect,
 )
 from oauthive.saml.sp import (
     AuthnRequestParams,
-    ParsedResponse,
     SAMLResponseError,
     build_authn_request,
     parse_response,

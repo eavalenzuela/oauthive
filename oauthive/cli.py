@@ -1,7 +1,14 @@
 """Typer CLI.
 
-M1 implements `oauthive discover`. Other commands are visible in the surface
-but raise NotImplementedError so users can see where the tool is going.
+Commands:
+  discover        -- OIDC .well-known probe + capabilities
+  saml-discover   -- SAML EntityDescriptor probe + capabilities
+  test            -- run the check suite (OIDC and/or SAML)
+  cleanup         -- revoke tokens retained by a prior --no-cleanup run
+  jose            -- JWT decode / forge (alg_none, hs256_pubkey, kid/jku/x5u)
+  saml            -- SAML decode / forge (XSW1-8, comment, XXE, logout request)
+  report          -- re-render HTML/Markdown from a prior findings.json
+  fixture         -- docker-compose self-test (Keycloak + vuln-sp)
 """
 
 from __future__ import annotations
@@ -298,10 +305,12 @@ def test(
         typer.Option("--out", help="Path to write HTML report (sibling .md also written)."),
     ] = None,
 ) -> None:
-    """Run the check suite.
+    """Run the check suite against an OIDC and/or SAML target.
 
-    M2 supports OIDC only (redirect_uri check). SAML / remaining OIDC checks /
-    HTML report arrive in later milestones.
+    Supply --discovery for OIDC, --saml-metadata for SAML, or both. For OIDC
+    runs --client-id and --redirect-uri are required. Writes findings.json
+    and, when --out is given, HTML + sibling Markdown. Exits non-zero when
+    any critical or high finding lands.
     """
     import asyncio
 
@@ -653,7 +662,7 @@ def saml_decode(
             try:
                 raw = _b64.b64decode(source)
             except Exception:
-                typer.secho(f"error: could not decode source", fg=typer.colors.RED, err=True)
+                typer.secho("error: could not decode source", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2)
 
     if redirect_b64:
@@ -919,7 +928,7 @@ def fixture_up() -> None:
         raise typer.Exit(code=rc)
     typer.secho(
         "keycloak starting. Discovery URL:\n  " +
-        f"http://127.0.0.1:8080/realms/oauthive-dev/.well-known/openid-configuration",
+        "http://127.0.0.1:8080/realms/oauthive-dev/.well-known/openid-configuration",
         fg=typer.colors.GREEN,
     )
 

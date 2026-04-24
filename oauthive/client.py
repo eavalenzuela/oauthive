@@ -111,8 +111,10 @@ async def send_authorization_request(
 class OAuthClient:
     """Thin wrapper bundling a discovery doc + client credentials + httpx session.
 
-    Grows with later milestones (token exchange, refresh, PAR, DPoP). For M2
-    only the authorization-endpoint probe is needed.
+    Covers: authorization-endpoint probe (no browser), authorization-code
+    exchange, refresh-token exchange, RFC 7009 revocation, optional mTLS via
+    an SSL context loaded from cert/key paths. DPoP proof construction lives
+    in oauthive.jose.dpop. PAR and JARM are not yet implemented.
     """
 
     def __init__(

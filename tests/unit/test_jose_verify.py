@@ -1,7 +1,5 @@
-import json
 
 import httpx
-import jwt
 import pytest
 import respx
 

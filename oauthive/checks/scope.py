@@ -47,9 +47,6 @@ class ScopeCheck:
             return []
 
         findings: list[Finding] = []
-        advertised = set(ctx.capabilities.oidc.supported_grant_types) | set(
-            ctx.capabilities.oidc.supported_response_types
-        )
         advertised_scopes = set(getattr(ctx.discovery, "scopes_supported", []) or [])
 
         for scope in FUZZ_SCOPES:

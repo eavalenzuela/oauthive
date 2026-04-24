@@ -10,7 +10,6 @@ Does not actually run Docker. Confirms:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 

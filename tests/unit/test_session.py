@@ -1,7 +1,5 @@
-import os
 import stat
 
-import pytest
 
 from oauthive.session import AuthSession
 

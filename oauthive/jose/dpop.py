@@ -8,15 +8,12 @@ for checks that want to observe whether a server actually enforces DPoP
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from .forge import _b64u, _b64u_json, RSASigner

@@ -24,7 +24,7 @@ Discovery-level:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 
 from .base import Finding
 

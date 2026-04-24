@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import httpx
-import pytest
 import respx
 import structlog
 
@@ -47,7 +46,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
             302, headers={"location": f"{redirect_uri}#id_token=eyJ.fake.jwt&state=s"}
         )
     # Default: code flow. Echo the code and state but never include iss.
-    q = f"code=c"
+    q = "code=c"
     if "state" in params:
         q += f"&state={params['state']}"
     return httpx.Response(302, headers={"location": f"{redirect_uri}?{q}"})

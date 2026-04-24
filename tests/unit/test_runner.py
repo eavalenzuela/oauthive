@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 import httpx
-import pytest
 import structlog
 
 from oauthive.capabilities import CapabilitiesReport, OIDCCapabilities

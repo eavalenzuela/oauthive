@@ -7,7 +7,6 @@ the report stays portable.
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from jinja2 import Environment, select_autoescape
 

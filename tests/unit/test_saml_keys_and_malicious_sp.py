@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 import socket
-from pathlib import Path
 
 import httpx
 import pytest
@@ -16,7 +15,6 @@ from oauthive.malicious_rp.saml_keys import (
     SAMLKeyPaths,
     build_sp_metadata,
     cert_b64,
-    default_saml_paths,
     ensure_saml_keys,
 )
 from oauthive.malicious_rp.certs import CertError

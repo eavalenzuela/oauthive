@@ -11,7 +11,7 @@ import importlib
 import pkgutil
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import structlog
 

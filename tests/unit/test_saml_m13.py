@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 
 import httpx
-import pytest
 import structlog
 from lxml import etree
 

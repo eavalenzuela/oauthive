@@ -8,7 +8,6 @@ import json
 
 import httpx
 import pytest
-import respx
 import structlog
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -256,7 +255,8 @@ async def test_runner_skips_mtls_without_cert(monkeypatch):
 async def test_runner_runs_mtls_check_when_cert_present(monkeypatch, tmp_path):
     cert = tmp_path / "c.pem"
     key = tmp_path / "c.key"
-    cert.write_text("x"); key.write_text("y")
+    cert.write_text("x")
+    key.write_text("y")
 
     class _Ran(_MTLSCheck):
         async def run(self, ctx):

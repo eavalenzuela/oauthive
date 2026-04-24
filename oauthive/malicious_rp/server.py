@@ -21,8 +21,6 @@ building poison redirect_uris / JKU URIs.
 from __future__ import annotations
 
 import asyncio
-import json
-import ssl
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any

@@ -14,7 +14,7 @@ feed it to your RP. See PLAN.md.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..jose.verify import VerifyError, fetch_jwks, inspect_claims, unsafe_decode
 from .base import Finding
