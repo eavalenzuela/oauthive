@@ -181,6 +181,10 @@ def test(
     findings_out: Annotated[
         Path, typer.Option("--findings-json", help="Where to write versioned findings JSON.")
     ] = Path("findings.json"),
+    html_out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Path to write HTML report (sibling .md also written)."),
+    ] = None,
 ) -> None:
     """Run the check suite.
 
@@ -301,10 +305,22 @@ def test(
             payload["cleanup_report"] = cleanup_block
         findings_out.write_text(json.dumps(payload, indent=2, default=str))
 
+        from .report import html as html_report
+        from .report import markdown as md_report
         from .report import text as text_report
 
         text_report.render(report)
         typer.echo(f"\nfindings written to {findings_out}")
+        if html_out is not None:
+            html_out.write_text(
+                html_report.render(report, no_cleanup_banner=no_cleanup)
+            )
+            md_path = html_out.with_suffix(".md")
+            md_path.write_text(
+                md_report.render(report, no_cleanup_banner=no_cleanup)
+            )
+            typer.echo(f"html report: {html_out}")
+            typer.echo(f"markdown:    {md_path}")
 
         counts = report.severity_counts()
         if counts.get("critical", 0) or counts.get("high", 0):
@@ -451,9 +467,52 @@ app.add_typer(report_app, name="report")
 
 
 @report_app.command("render")
-def report_render(findings_json: Path) -> None:
-    """Re-render a report from a prior run's findings.json."""
-    raise NotImplementedError("report render arrives with M8 (HTML report).")
+def report_render(
+    findings_json: Annotated[Path, typer.Argument(exists=True, help="Path to findings.json")],
+    out: Annotated[
+        Path | None, typer.Option("--out", help="HTML output path (also writes sibling .md).")
+    ] = None,
+    format: Annotated[
+        str, typer.Option("--format", help="One of: html, md. Ignored if --out is set.")
+    ] = "html",
+) -> None:
+    """Re-render a report from a prior run's findings.json.
+
+    Without --out, writes to stdout in the requested --format.
+    """
+    import json as _json
+
+    from .report import html as html_report
+    from .report import markdown as md_report
+    from .report.schema import Report, SCHEMA_VERSION
+
+    data = _json.loads(findings_json.read_text())
+    if data.get("schema_version") != SCHEMA_VERSION:
+        typer.secho(
+            f"warning: findings.json schema_version {data.get('schema_version')} "
+            f"!= {SCHEMA_VERSION}; rendering may miss newer fields.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    # Drop cleanup_report block so the Report validator doesn't reject it.
+    data.pop("cleanup_report", None)
+    report = Report.model_validate(data)
+
+    if out is not None:
+        out.write_text(html_report.render(report))
+        md_path = out.with_suffix(".md")
+        md_path.write_text(md_report.render(report))
+        typer.echo(f"html report: {out}")
+        typer.echo(f"markdown:    {md_path}")
+        return
+
+    if format == "html":
+        typer.echo(html_report.render(report))
+    elif format == "md":
+        typer.echo(md_report.render(report))
+    else:
+        typer.secho(f"unknown --format {format!r}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
 
 fixture_app = typer.Typer(help="Self-test fixture (docker-compose).", no_args_is_help=True)
