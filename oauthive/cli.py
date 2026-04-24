@@ -137,9 +137,121 @@ def discover(
 
 
 @app.command("saml-discover")
-def saml_discover(metadata: Annotated[str, typer.Argument(help="SAML metadata URL or file path")]) -> None:
+def saml_discover(
+    metadata: Annotated[str, typer.Argument(help="SAML metadata URL or file path")],
+    tenant_id: Annotated[
+        str | None,
+        typer.Option("--i-own-this-tenant", help="Tenant identifier you are testing."),
+    ] = None,
+    allow_public_provider: Annotated[bool, typer.Option("--allow-public-provider")] = False,
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit JSON instead of text.")] = False,
+) -> None:
     """Parse a SAML 2.0 EntityDescriptor and print the capabilities probe."""
-    raise NotImplementedError("saml-discover arrives with M10 (SAML metadata parsing).")
+    import asyncio
+    import json as _json
+    from pathlib import Path as _Path
+
+    import httpx
+
+    from .capabilities import CapabilitiesReport, derive_from_saml_metadata
+    from .saml.metadata import SAMLMetadataError, parse_metadata
+
+    looks_like_url = metadata.startswith(("http://", "https://"))
+    if looks_like_url:
+        try:
+            if allow_public_provider or tenant_id:
+                assert_permitted(
+                    metadata,
+                    tenant_id or "discover-only",
+                    allow_public_provider=allow_public_provider,
+                    reason=reason,
+                )
+            else:
+                from urllib.parse import urlparse as _up
+                from .legal import host_is_public_provider
+
+                host = _up(metadata).hostname or ""
+                if host_is_public_provider(host):
+                    raise LegalGuardError(
+                        f"refusing to fetch SAML metadata from public provider host {host!r}. "
+                        "Re-run with --allow-public-provider --reason \"<text>\" or "
+                        "--i-own-this-tenant <id>."
+                    )
+        except LegalGuardError as e:
+            typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+
+    async def _fetch(url: str) -> bytes:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+            r = await c.get(url, headers={"Accept": "application/samlmetadata+xml, application/xml, */*"})
+            r.raise_for_status()
+            return r.content
+
+    try:
+        if looks_like_url:
+            xml = asyncio.run(_fetch(metadata))
+        else:
+            xml = _Path(metadata).read_bytes()
+    except httpx.HTTPError as e:
+        typer.secho(f"fetch failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    except FileNotFoundError:
+        typer.secho(f"metadata file not found: {metadata}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        md = parse_metadata(xml)
+    except SAMLMetadataError as e:
+        typer.secho(f"metadata parse failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    caps = CapabilitiesReport(saml=derive_from_saml_metadata(md))
+
+    if as_json:
+        typer.echo(
+            _json.dumps(
+                {
+                    "entity_id": md.entity_id,
+                    "role": md.role,
+                    "metadata_signed": md.metadata_signed,
+                    "sso_services": [
+                        {"binding": s.binding, "location": s.location} for s in md.sso_services
+                    ],
+                    "slo_services": [
+                        {"binding": s.binding, "location": s.location} for s in md.slo_services
+                    ],
+                    "acs_services": [
+                        {"binding": s.binding, "location": s.location} for s in md.acs_services
+                    ],
+                    "name_id_formats": md.name_id_formats,
+                    "want_authn_requests_signed": md.want_authn_requests_signed,
+                    "want_assertions_signed": md.want_assertions_signed,
+                    "capabilities": caps.model_dump(mode="json"),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    typer.secho(f"entity_id: {md.entity_id}", bold=True)
+    typer.echo(f"  role:                        {md.role}")
+    typer.echo(f"  metadata_signed:             {md.metadata_signed}")
+    typer.echo(f"  want_authn_requests_signed:  {md.want_authn_requests_signed}")
+    typer.echo(f"  want_assertions_signed:      {md.want_assertions_signed}")
+    typer.echo(f"  sso_bindings:                {md.sso_bindings()}")
+    typer.echo(f"  slo_bindings:                {md.slo_bindings()}")
+    typer.echo(f"  name_id_formats:             {md.name_id_formats}")
+    typer.echo(f"  signing_cert_count:          {len(md.signing_certs())}")
+    typer.echo(f"  encryption_cert_count:       {len(md.encryption_certs())}")
+    if md.sso_services:
+        typer.echo("  sso_services:")
+        for s in md.sso_services:
+            typer.echo(f"    - {s.binding}  {s.location}")
+    if md.acs_services:
+        typer.echo("  acs_services:")
+        for s in md.acs_services:
+            typer.echo(f"    - {s.binding}  {s.location}")
 
 
 @app.command()

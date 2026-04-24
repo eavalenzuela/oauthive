@@ -10,9 +10,14 @@ conclusion on the CapabilitiesReport so checks can distinguish "advertised" from
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from pydantic import BaseModel, Field
 
 from .discovery import DiscoveryDoc
+
+if TYPE_CHECKING:
+    from .saml.metadata import EntityDescriptor
 
 
 class OIDCCapabilities(BaseModel):
@@ -80,6 +85,25 @@ class CapabilitiesReport(BaseModel):
         if self.saml.present:
             tags.add("saml")
         return tags
+
+
+def derive_from_saml_metadata(md: "EntityDescriptor") -> SAMLCapabilities:
+    """Populate SAMLCapabilities from a parsed EntityDescriptor.
+
+    Operates on the 'public' shape of the metadata only -- certificate
+    fingerprints / algorithm lists come from later-milestone checks that
+    inspect the KeyInfo and signature algs deeper.
+    """
+    return SAMLCapabilities(
+        present=True,
+        entity_id=md.entity_id,
+        sso_bindings=md.sso_bindings(),
+        slo_bindings=md.slo_bindings(),
+        want_authn_requests_signed=md.want_authn_requests_signed,
+        sign_assertions=md.want_assertions_signed,
+        name_id_formats=list(md.name_id_formats),
+        metadata_signed=md.metadata_signed,
+    )
 
 
 def derive_from_discovery(doc: DiscoveryDoc) -> OIDCCapabilities:
