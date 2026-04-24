@@ -1,0 +1,176 @@
+"""Check orchestrator.
+
+M2 ships the sequential path only. --concurrency for parallel_safe checks
+lands when there's a second parallel_safe check to prove the semaphore pool.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import pkgutil
+import time
+from dataclasses import dataclass
+from typing import Iterable
+
+import structlog
+
+from . import __version__
+from .context import Context
+from .checks.base import Check, Finding
+from .report.schema import CheckRecord, FindingRecord, Report, RunMetadata, now_utc
+
+
+@dataclass
+class RunnerConfig:
+    tenant_id: str
+    enabled: list[str]  # check ids, or ["all"]
+    disabled: list[str]
+    per_check_timeout_s: float = 30.0
+    target_issuer: str | None = None
+    allow_public_provider: bool = False
+    allow_public_reason: str | None = None
+
+
+def _discover_checks() -> list[Check]:
+    """Scan oauthive.checks.* for modules that expose a top-level Check class.
+
+    Entry-point plugin loading is added alongside third-party check packaging
+    (post-M2). For the in-tree modules, scanning is enough.
+    """
+    from . import checks as checks_pkg
+
+    found: list[Check] = []
+    for info in pkgutil.iter_modules(checks_pkg.__path__):
+        if info.name == "base":
+            continue
+        mod = importlib.import_module(f"oauthive.checks.{info.name}")
+        for attr_name in dir(mod):
+            obj = getattr(mod, attr_name)
+            if (
+                isinstance(obj, type)
+                and attr_name.endswith("Check")
+                and attr_name != "Check"
+            ):
+                found.append(obj())
+    return found
+
+
+def select_checks(
+    all_checks: Iterable[Check],
+    enabled: list[str],
+    disabled: list[str],
+) -> list[Check]:
+    enabled_set = set(enabled)
+    disabled_set = set(disabled)
+    out: list[Check] = []
+    for c in all_checks:
+        if c.id in disabled_set:
+            continue
+        if "all" in enabled_set or c.id in enabled_set:
+            out.append(c)
+    return out
+
+
+async def _run_one(check: Check, ctx: Context, timeout_s: float) -> CheckRecord:
+    start = time.perf_counter()
+    try:
+        findings = await asyncio.wait_for(check.run(ctx), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return CheckRecord(
+            id=check.id,
+            name=check.name,
+            status="error",
+            duration_s=time.perf_counter() - start,
+            error=f"timed out after {timeout_s:.1f}s",
+        )
+    except Exception as e:  # noqa: BLE001 - checks are user-extensible
+        return CheckRecord(
+            id=check.id,
+            name=check.name,
+            status="error",
+            duration_s=time.perf_counter() - start,
+            error=f"{type(e).__name__}: {e}",
+        )
+    return CheckRecord(
+        id=check.id,
+        name=check.name,
+        status="fail" if findings else "pass",
+        duration_s=time.perf_counter() - start,
+        findings=[_to_record(f) for f in findings],
+    )
+
+
+def _to_record(f: Finding) -> FindingRecord:
+    return FindingRecord(
+        id=f.id,
+        severity=f.severity,
+        confidence=f.confidence,
+        title=f.title,
+        description=f.description,
+        spec_ref=f.spec_ref,
+        remediation=f.remediation,
+        poc_url=f.poc_url,
+        evidence=f.evidence,
+    )
+
+
+async def run(ctx: Context, cfg: RunnerConfig) -> Report:
+    started = now_utc()
+    log = ctx.log.bind(tenant_id=cfg.tenant_id)
+
+    all_checks = _discover_checks()
+    selected = select_checks(all_checks, cfg.enabled, cfg.disabled)
+    log.info(
+        "runner.start",
+        discovered=[c.id for c in all_checks],
+        selected=[c.id for c in selected],
+    )
+
+    tags = ctx.capabilities.capability_tags()
+    records: list[CheckRecord] = []
+
+    for check in selected:
+        missing = check.requires_capabilities - tags
+        if missing:
+            records.append(
+                CheckRecord(
+                    id=check.id,
+                    name=check.name,
+                    status="skipped",
+                    duration_s=0.0,
+                    skip_reason=f"missing capabilities: {sorted(missing)}",
+                )
+            )
+            continue
+        records.append(await _run_one(check, ctx, cfg.per_check_timeout_s))
+
+    report = Report(
+        metadata=RunMetadata(
+            tenant_id=cfg.tenant_id,
+            started_at=started,
+            finished_at=now_utc(),
+            tool_version=__version__,
+            target_issuer=cfg.target_issuer,
+            allow_public_provider=cfg.allow_public_provider,
+            allow_public_reason=cfg.allow_public_reason,
+        ),
+        checks=records,
+    )
+    log.info(
+        "runner.done",
+        counts=report.severity_counts(),
+        n_checks=len(records),
+    )
+    return report
+
+
+def make_logger(tenant_id: str) -> structlog.stdlib.BoundLogger:
+    structlog.configure(
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.add_log_level,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
+    return structlog.get_logger().bind(tenant_id=tenant_id)

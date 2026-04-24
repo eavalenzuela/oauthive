@@ -144,16 +144,120 @@ def saml_discover(metadata: Annotated[str, typer.Argument(help="SAML metadata UR
 
 @app.command()
 def test(
-    discovery: Annotated[str | None, typer.Option("--discovery")] = None,
-    saml_metadata: Annotated[str | None, typer.Option("--saml-metadata")] = None,
-    config: Annotated[Path | None, typer.Option("--config", "-c", exists=True)] = None,
+    discovery: Annotated[str | None, typer.Option("--discovery", help="OIDC discovery URL.")] = None,
+    saml_metadata: Annotated[
+        str | None, typer.Option("--saml-metadata", help="SAML metadata URL or file path.")
+    ] = None,
+    client_id: Annotated[str | None, typer.Option("--client-id")] = None,
+    client_secret: Annotated[str | None, typer.Option("--client-secret")] = None,
+    redirect_uri: Annotated[str | None, typer.Option("--redirect-uri")] = None,
     tenant_id: Annotated[str | None, typer.Option("--i-own-this-tenant")] = None,
-    checks: Annotated[str, typer.Option("--checks", help="Comma-separated check ids or 'all'.")] = "all",
-    session_mode: Annotated[str, typer.Option("--session-mode")] = "isolated",
-    out: Annotated[Path, typer.Option("--out")] = Path("report.html"),
+    allow_public_provider: Annotated[bool, typer.Option("--allow-public-provider")] = False,
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
+    checks: Annotated[
+        str, typer.Option("--checks", help="Comma-separated check ids or 'all'.")
+    ] = "all",
+    disabled: Annotated[str, typer.Option("--disabled", help="Comma-separated check ids.")] = "",
+    per_check_timeout_s: Annotated[float, typer.Option("--timeout")] = 30.0,
+    findings_out: Annotated[
+        Path, typer.Option("--findings-json", help="Where to write versioned findings JSON.")
+    ] = Path("findings.json"),
 ) -> None:
-    """Run the full check suite (arrives milestone by milestone)."""
-    raise NotImplementedError("test arrives with M2 (runner + first check).")
+    """Run the check suite.
+
+    M2 supports OIDC only (redirect_uri check). SAML / remaining OIDC checks /
+    HTML report arrive in later milestones.
+    """
+    import asyncio
+
+    import httpx
+
+    from .capabilities import CapabilitiesReport, derive_from_discovery
+    from .client import OAuthClient
+    from .context import Context
+    from .discovery import DiscoveryError, fetch_discovery
+    from .runner import RunnerConfig, make_logger, run
+
+    if saml_metadata:
+        typer.secho(
+            "--saml-metadata: SAML checks arrive with M10+. Ignoring for now.",
+            fg=typer.colors.YELLOW,
+        )
+    if not discovery:
+        typer.secho(
+            "error: --discovery is required (SAML-only runs arrive with M10+).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not (client_id and redirect_uri):
+        typer.secho(
+            "error: --client-id and --redirect-uri are required.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    try:
+        assert_permitted(
+            discovery,
+            tenant_id,
+            allow_public_provider=allow_public_provider,
+            reason=reason,
+        )
+    except LegalGuardError as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    async def _go() -> int:
+        try:
+            doc = await fetch_discovery(discovery)
+        except DiscoveryError as e:
+            typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
+            return 1
+
+        caps = CapabilitiesReport(oidc=derive_from_discovery(doc))
+        log = make_logger(tenant_id or "")
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            client = OAuthClient(
+                discovery=doc,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                client_secret=client_secret,
+                http=http,
+            )
+            ctx = Context(
+                tenant_id=tenant_id or "",
+                discovery=doc,
+                capabilities=caps,
+                http=http,
+                log=log,
+                client=client,
+            )
+            cfg = RunnerConfig(
+                tenant_id=tenant_id or "",
+                enabled=[c.strip() for c in checks.split(",") if c.strip()],
+                disabled=[c.strip() for c in disabled.split(",") if c.strip()],
+                per_check_timeout_s=per_check_timeout_s,
+                target_issuer=str(doc.issuer),
+                allow_public_provider=allow_public_provider,
+                allow_public_reason=reason,
+            )
+            report = await run(ctx, cfg)
+
+        findings_out.write_text(report.model_dump_json(indent=2))
+
+        from .report import text as text_report
+
+        text_report.render(report)
+        typer.echo(f"\nfindings written to {findings_out}")
+
+        counts = report.severity_counts()
+        if counts.get("critical", 0) or counts.get("high", 0):
+            return 3
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 report_app = typer.Typer(help="Report commands.", no_args_is_help=True)
