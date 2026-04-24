@@ -1,0 +1,90 @@
+{
+  "realm": "oauthive-dev",
+  "enabled": true,
+  "displayName": "oauthive self-test realm (intentionally misconfigured)",
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 3600,
+  "revokeRefreshToken": false,
+  "refreshTokenMaxReuse": 0,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "attributes": {
+    "frontendUrl": "http://localhost:8080",
+    "adminEventsEnabled": "false"
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Tester",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-pass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["default-roles-oauthive-dev"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "oauthive-public-no-pkce",
+      "name": "Public client without PKCE enforcement",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "https://app.example.test/cb",
+        "http://127.0.0.1:8443/cb"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "",
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "oauthive-prefix-redirect",
+      "name": "Client with prefix-match redirect URIs",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "https://app.example.test/*",
+        "http://127.0.0.1:8443/*"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "oauthive-confidential",
+      "name": "Well-configured control client",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "oauthive-confidential-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "https://app.example.test/cb",
+        "http://127.0.0.1:8443/cb"
+      ],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    }
+  ]
+}

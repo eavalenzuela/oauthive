@@ -521,17 +521,131 @@ app.add_typer(fixture_app, name="fixture")
 
 @fixture_app.command("up")
 def fixture_up() -> None:
-    raise NotImplementedError("fixture up arrives with M9 (Keycloak fixture).")
+    """docker compose up the Keycloak self-test fixture."""
+    from .fixture import FixtureError, run, up_cmd
+
+    try:
+        cmd = up_cmd()
+    except FixtureError as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"running: {' '.join(cmd.argv)} (cwd={cmd.cwd})")
+    rc = run(cmd)
+    if rc != 0:
+        raise typer.Exit(code=rc)
+    typer.secho(
+        "keycloak starting. Discovery URL:\n  " +
+        f"http://127.0.0.1:8080/realms/oauthive-dev/.well-known/openid-configuration",
+        fg=typer.colors.GREEN,
+    )
 
 
 @fixture_app.command("down")
-def fixture_down() -> None:
-    raise NotImplementedError("fixture down arrives with M9.")
+def fixture_down(
+    volumes: Annotated[
+        bool,
+        typer.Option("--volumes/--keep-volumes", help="Remove the docker volumes too."),
+    ] = True,
+) -> None:
+    """docker compose down the fixture."""
+    from .fixture import FixtureError, down_cmd, run
+
+    try:
+        cmd = down_cmd(volumes=volumes)
+    except FixtureError as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"running: {' '.join(cmd.argv)} (cwd={cmd.cwd})")
+    rc = run(cmd)
+    raise typer.Exit(code=rc)
 
 
 @fixture_app.command("demo")
-def fixture_demo() -> None:
-    raise NotImplementedError("fixture demo arrives with M9.")
+def fixture_demo(
+    wait_s: Annotated[float, typer.Option("--wait", help="Seconds to wait for readiness.")] = 90.0,
+    client_id: Annotated[
+        str, typer.Option("--client-id")
+    ] = "oauthive-public-no-pkce",
+    redirect_uri: Annotated[
+        str, typer.Option("--redirect-uri")
+    ] = "https://app.example.test/cb",
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict/--no-strict",
+            help=(
+                "Assert that EXPECTED_FINDING_IDS are all present; exit non-zero otherwise. "
+                "Use in CI to catch regressions in the check suite."
+            ),
+        ),
+    ] = True,
+) -> None:
+    """Run the check suite against the running fixture and assert expected ids."""
+    import asyncio
+
+    import httpx
+
+    from .capabilities import CapabilitiesReport, derive_from_discovery
+    from .client import OAuthClient
+    from .context import Context
+    from .discovery import DiscoveryError, fetch_discovery
+    from .fixture import DISCOVERY_URL, EXPECTED_FINDING_IDS, FixtureError, wait_for_ready
+    from .runner import RunnerConfig, make_logger, run as run_checks
+
+    async def _go() -> int:
+        try:
+            await wait_for_ready(timeout_s=wait_s)
+        except FixtureError as e:
+            typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+            return 1
+        try:
+            doc = await fetch_discovery(DISCOVERY_URL)
+        except DiscoveryError as e:
+            typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
+            return 1
+
+        caps = CapabilitiesReport(oidc=derive_from_discovery(doc))
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            client = OAuthClient(
+                discovery=doc,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                http=http,
+            )
+            ctx = Context(
+                tenant_id="oauthive-fixture",
+                discovery=doc,
+                capabilities=caps,
+                http=http,
+                log=make_logger("oauthive-fixture"),
+                client=client,
+            )
+            cfg = RunnerConfig(
+                tenant_id="oauthive-fixture",
+                enabled=["all"],
+                disabled=[],
+                target_issuer=str(doc.issuer),
+            )
+            report = await run_checks(ctx, cfg)
+
+        from .report import text as text_report
+
+        text_report.render(report)
+
+        if strict:
+            got = {f.id for c in report.checks for f in c.findings}
+            missing = EXPECTED_FINDING_IDS - got
+            if missing:
+                typer.secho(
+                    f"\nfixture demo: expected findings missing: {sorted(missing)}",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                return 2
+            typer.secho("\nfixture demo: all expected findings present", fg=typer.colors.GREEN)
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_go()))
 
 
 @app.command()
