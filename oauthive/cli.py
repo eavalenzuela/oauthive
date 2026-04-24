@@ -313,29 +313,25 @@ def test(
     from .discovery import DiscoveryError, fetch_discovery
     from .runner import RunnerConfig, make_logger, run
 
-    if saml_metadata:
+    if not discovery and not saml_metadata:
         typer.secho(
-            "--saml-metadata: SAML checks arrive with M10+. Ignoring for now.",
-            fg=typer.colors.YELLOW,
-        )
-    if not discovery:
-        typer.secho(
-            "error: --discovery is required (SAML-only runs arrive with M10+).",
+            "error: provide --discovery and/or --saml-metadata.",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=2)
-    if not (client_id and redirect_uri):
+    if discovery and not (client_id and redirect_uri):
         typer.secho(
-            "error: --client-id and --redirect-uri are required.",
+            "error: --client-id and --redirect-uri are required when --discovery is set.",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=2)
 
     try:
+        gate_url = discovery or saml_metadata
         assert_permitted(
-            discovery,
+            gate_url,
             tenant_id,
             allow_public_provider=allow_public_provider,
             reason=reason,
@@ -345,22 +341,56 @@ def test(
         raise typer.Exit(code=2)
 
     async def _go() -> int:
-        try:
-            doc = await fetch_discovery(discovery)
-        except DiscoveryError as e:
-            typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
-            return 1
+        doc = None
+        saml_md = None
+        if discovery:
+            try:
+                doc = await fetch_discovery(discovery)
+            except DiscoveryError as e:
+                typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
+                return 1
 
-        caps = CapabilitiesReport(oidc=derive_from_discovery(doc))
+        if saml_metadata:
+            from .capabilities import derive_from_saml_metadata
+            from .saml.metadata import SAMLMetadataError, parse_metadata
+
+            try:
+                if saml_metadata.startswith(("http://", "https://")):
+                    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
+                        r = await c.get(
+                            saml_metadata,
+                            headers={
+                                "Accept": "application/samlmetadata+xml, application/xml, */*"
+                            },
+                        )
+                        r.raise_for_status()
+                        xml = r.content
+                else:
+                    xml = Path(saml_metadata).read_bytes()
+                saml_md = parse_metadata(xml)
+            except (httpx.HTTPError, FileNotFoundError, SAMLMetadataError) as e:
+                typer.secho(f"saml metadata failed: {e}", fg=typer.colors.RED, err=True)
+                return 1
+
+        caps = CapabilitiesReport()
+        if doc is not None:
+            caps.oidc = derive_from_discovery(doc)
+        if saml_md is not None:
+            from .capabilities import derive_from_saml_metadata
+
+            caps.saml = derive_from_saml_metadata(saml_md)
+
         log = make_logger(tenant_id or "")
         async with httpx.AsyncClient(timeout=15.0) as http:
-            client = OAuthClient(
-                discovery=doc,
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                client_secret=client_secret,
-                http=http,
-            )
+            client = None
+            if doc is not None and client_id and redirect_uri:
+                client = OAuthClient(
+                    discovery=doc,
+                    client_id=client_id,
+                    redirect_uri=redirect_uri,
+                    client_secret=client_secret,
+                    http=http,
+                )
             ctx = Context(
                 tenant_id=tenant_id or "",
                 discovery=doc,
@@ -368,6 +398,7 @@ def test(
                 http=http,
                 log=log,
                 client=client,
+                saml_metadata=saml_md,
             )
             driver = None
             if browser != "none":
@@ -388,7 +419,9 @@ def test(
                 enabled=[c.strip() for c in checks.split(",") if c.strip()],
                 disabled=[c.strip() for c in disabled.split(",") if c.strip()],
                 per_check_timeout_s=per_check_timeout_s,
-                target_issuer=str(doc.issuer),
+                target_issuer=(str(doc.issuer) if doc is not None else (
+                    saml_md.entity_id if saml_md is not None else None
+                )),
                 allow_public_provider=allow_public_provider,
                 allow_public_reason=reason,
                 session_mode=session_mode,
@@ -402,7 +435,7 @@ def test(
             from .cleanup import revoke_session as _revoke
 
             session = getattr(ctx, "session", None)
-            if session and not no_cleanup:
+            if session and not no_cleanup and client is not None:
                 cr = await _revoke(client, session)
                 cleanup_block = cr.to_dict()
             elif session and no_cleanup:
@@ -572,6 +605,148 @@ def jose_forge(
 
     typer.secho(f"error: unknown --attack {attack!r}", fg=typer.colors.RED, err=True)
     raise typer.Exit(code=2)
+
+
+saml_app = typer.Typer(help="SAML tooling (decode + forge).", no_args_is_help=True)
+app.add_typer(saml_app, name="saml")
+
+
+@saml_app.command("decode")
+def saml_decode(
+    source: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Path to an XML file, '-' for stdin, or a base64-encoded "
+                "SAMLRequest/SAMLResponse value from a POST binding."
+            )
+        ),
+    ],
+    redirect_b64: Annotated[
+        bool,
+        typer.Option(
+            "--redirect-b64",
+            help="Treat source as the base64(DEFLATE(xml)) query value from the HTTP-Redirect binding.",
+        ),
+    ] = False,
+) -> None:
+    """Pretty-print a SAML AuthnRequest or Response."""
+    import base64 as _b64
+    import sys
+
+    from lxml import etree
+
+    from .saml.bindings import decode_deflate_b64
+
+    if source == "-":
+        raw = sys.stdin.buffer.read()
+    elif source.startswith("<?xml") or source.startswith("<"):
+        raw = source.encode()
+    else:
+        p = Path(source)
+        if p.exists():
+            raw = p.read_bytes()
+        else:
+            # Treat as base64 from a POST binding
+            try:
+                raw = _b64.b64decode(source)
+            except Exception:
+                typer.secho(f"error: could not decode source", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+
+    if redirect_b64:
+        raw = decode_deflate_b64(raw.decode() if isinstance(raw, bytes) else raw)
+
+    try:
+        root = etree.fromstring(raw)
+    except etree.XMLSyntaxError as e:
+        typer.secho(f"XML syntax error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    pretty = etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="utf-8")
+    typer.echo(pretty.decode())
+
+
+@saml_app.command("forge")
+def saml_forge(
+    attack: Annotated[
+        str,
+        typer.Option(
+            "--attack",
+            help=(
+                "One of: strip_signature, downgrade_sig_alg, swap_key_info, "
+                "inject_nameid_comment, xsw1."
+            ),
+        ),
+    ],
+    source: Annotated[
+        Path | None,
+        typer.Option("--from-file", help="Path to an XML Response."),
+    ] = None,
+    attacker_cert_b64: Annotated[
+        str | None,
+        typer.Option("--attacker-cert-b64", help="Base64 cert for swap_key_info."),
+    ] = None,
+    victim: Annotated[
+        str | None, typer.Option("--victim", help="Victim NameID for inject_nameid_comment.")
+    ] = None,
+    suffix: Annotated[
+        str, typer.Option("--suffix", help="Suffix after the injected comment.")
+    ] = ".attacker.test",
+    evil_name_id: Annotated[
+        str | None,
+        typer.Option(
+            "--evil-name-id",
+            help="NameID to substitute in the evil assertion for xsw1.",
+        ),
+    ] = None,
+) -> None:
+    """Forge a malicious SAML Response variant. Output goes to stdout."""
+    from .saml.forge import (
+        SAMLForgeError,
+        downgrade_sig_alg,
+        inject_nameid_comment,
+        strip_signature,
+        swap_key_info,
+        xsw1,
+    )
+
+    if source is None:
+        typer.secho(
+            "error: --from-file is required", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(code=2)
+
+    xml = source.read_bytes()
+
+    try:
+        if attack == "strip_signature":
+            out = strip_signature(xml)
+        elif attack == "downgrade_sig_alg":
+            out = downgrade_sig_alg(xml)
+        elif attack == "swap_key_info":
+            if not attacker_cert_b64:
+                typer.secho("--attacker-cert-b64 is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            out = swap_key_info(xml, attacker_cert_b64)
+        elif attack == "inject_nameid_comment":
+            if not victim:
+                typer.secho("--victim is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            out = inject_nameid_comment(xml, victim, suffix=suffix)
+        elif attack == "xsw1":
+            if not evil_name_id:
+                typer.secho("--evil-name-id is required", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            out = xsw1(xml, evil_name_id)
+        else:
+            typer.secho(f"unknown attack {attack!r}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+    except SAMLForgeError as e:
+        typer.secho(f"forge failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(out.decode())
 
 
 report_app = typer.Typer(help="Report commands.", no_args_is_help=True)
