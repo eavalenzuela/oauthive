@@ -159,6 +159,14 @@ def test(
     ] = "all",
     disabled: Annotated[str, typer.Option("--disabled", help="Comma-separated check ids.")] = "",
     per_check_timeout_s: Annotated[float, typer.Option("--timeout")] = 30.0,
+    session_mode: Annotated[str, typer.Option("--session-mode")] = "isolated",
+    no_cleanup: Annotated[
+        bool,
+        typer.Option(
+            "--no-cleanup",
+            help="Retain tokens on disk after the run (for debugging).",
+        ),
+    ] = False,
     findings_out: Annotated[
         Path, typer.Option("--findings-json", help="Where to write versioned findings JSON.")
     ] = Path("findings.json"),
@@ -242,10 +250,30 @@ def test(
                 target_issuer=str(doc.issuer),
                 allow_public_provider=allow_public_provider,
                 allow_public_reason=reason,
+                session_mode=session_mode,
+                cleanup_tokens=not no_cleanup,
             )
             report = await run(ctx, cfg)
 
-        findings_out.write_text(report.model_dump_json(indent=2))
+            # Token cleanup: revoke any session still attached to the context.
+            cleanup_block: dict | None = None
+            from .cleanup import revoke_session as _revoke
+
+            session = getattr(ctx, "session", None)
+            if session and not no_cleanup:
+                cr = await _revoke(client, session)
+                cleanup_block = cr.to_dict()
+            elif session and no_cleanup:
+                typer.secho(
+                    "LIVE TOKENS RETAINED -- run 'oauthive cleanup <tenant-id>' when done.",
+                    fg=typer.colors.BRIGHT_YELLOW,
+                    bold=True,
+                )
+
+        payload = report.model_dump(mode="json")
+        if cleanup_block is not None:
+            payload["cleanup_report"] = cleanup_block
+        findings_out.write_text(json.dumps(payload, indent=2, default=str))
 
         from .report import text as text_report
 
@@ -290,9 +318,68 @@ def fixture_demo() -> None:
 
 
 @app.command()
-def cleanup(run_id: Annotated[str, typer.Argument()]) -> None:
+def cleanup(
+    tenant_id: Annotated[str, typer.Argument(help="Tenant id whose session should be revoked.")],
+    discovery: Annotated[str, typer.Option("--discovery", help="OIDC discovery URL.")],
+    client_id: Annotated[str, typer.Option("--client-id")],
+    client_secret: Annotated[str | None, typer.Option("--client-secret")] = None,
+    redirect_uri: Annotated[
+        str, typer.Option("--redirect-uri", help="Registered redirect_uri (required by some IdPs).")
+    ] = "http://127.0.0.1/cb",
+    allow_public_provider: Annotated[bool, typer.Option("--allow-public-provider")] = False,
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
+) -> None:
     """Revoke tokens still on disk from a prior --no-cleanup run."""
-    raise NotImplementedError("cleanup arrives alongside the runner (M2+).")
+    import asyncio
+
+    import httpx
+
+    from .cleanup import revoke_session
+    from .client import OAuthClient
+    from .discovery import DiscoveryError, fetch_discovery
+    from .session import AuthSession
+
+    try:
+        assert_permitted(
+            discovery,
+            tenant_id,
+            allow_public_provider=allow_public_provider,
+            reason=reason,
+        )
+    except LegalGuardError as e:
+        typer.secho(f"error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    session = AuthSession.load(tenant_id)
+    if session is None:
+        typer.secho(
+            f"no session on disk for tenant_id={tenant_id!r}; nothing to do.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=0)
+
+    async def _go() -> None:
+        try:
+            doc = await fetch_discovery(discovery)
+        except DiscoveryError as e:
+            typer.secho(f"discovery failed: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            client = OAuthClient(
+                discovery=doc,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                http=http,
+            )
+            report = await revoke_session(client, session)
+        for o in report.outcomes:
+            colour = typer.colors.GREEN if o.revoked else typer.colors.RED
+            typer.secho(
+                f"  {o.token_kind:15} revoked={o.revoked}  {o.detail or ''}", fg=colour
+            )
+
+    asyncio.run(_go())
 
 
 if __name__ == "__main__":

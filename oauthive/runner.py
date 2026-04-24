@@ -30,6 +30,21 @@ class RunnerConfig:
     target_issuer: str | None = None
     allow_public_provider: bool = False
     allow_public_reason: str | None = None
+    session_mode: str = "isolated"  # "isolated" | "fast"
+    cleanup_tokens: bool = True
+
+
+def _order_for_session_mode(checks: list[Check], mode: str) -> list[Check]:
+    """In fast mode, pin mutating checks (which invalidate the shared session)
+    to the end so earlier checks see a live session."""
+    if mode != "fast":
+        return list(checks)
+    # Any check that requires_fresh_auth or whose id is 'logout' / 'refresh_token'
+    # is treated as session-mutating. Other checks run first.
+    def _is_mutating(c: Check) -> bool:
+        return c.requires_fresh_auth or c.id in {"logout", "refresh_token"}
+
+    return sorted(checks, key=lambda c: (1 if _is_mutating(c) else 0, c.id))
 
 
 def _discover_checks() -> list[Check]:
@@ -127,6 +142,7 @@ async def run(ctx: Context, cfg: RunnerConfig) -> Report:
         selected=[c.id for c in selected],
     )
 
+    selected = _order_for_session_mode(selected, cfg.session_mode)
     tags = ctx.capabilities.capability_tags()
     records: list[CheckRecord] = []
 

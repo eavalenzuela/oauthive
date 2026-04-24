@@ -30,3 +30,7 @@ class Context:
     malicious_rp: Any = None
     saml_metadata: Any = None
     config: Any = None
+    # Callable that yields an AuthSession. In isolated mode, mints fresh
+    # every call; in fast mode, returns the shared one (or a fresh one if the
+    # check set requires_fresh_auth). Populated by the runner.
+    session_factory: Any = None
