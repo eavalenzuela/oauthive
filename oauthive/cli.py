@@ -201,7 +201,7 @@ def saml_discover(
         raise typer.Exit(code=1)
 
     try:
-        md = parse_metadata(xml)
+        md = parse_metadata(xml, source_url=metadata if looks_like_url else None)
     except SAMLMetadataError as e:
         typer.secho(f"metadata parse failed: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -355,7 +355,9 @@ def test(
             from .saml.metadata import SAMLMetadataError, parse_metadata
 
             try:
+                fetched_url: str | None = None
                 if saml_metadata.startswith(("http://", "https://")):
+                    fetched_url = saml_metadata
                     async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as c:
                         r = await c.get(
                             saml_metadata,
@@ -367,7 +369,7 @@ def test(
                         xml = r.content
                 else:
                     xml = Path(saml_metadata).read_bytes()
-                saml_md = parse_metadata(xml)
+                saml_md = parse_metadata(xml, source_url=fetched_url)
             except (httpx.HTTPError, FileNotFoundError, SAMLMetadataError) as e:
                 typer.secho(f"saml metadata failed: {e}", fg=typer.colors.RED, err=True)
                 return 1
@@ -677,7 +679,7 @@ def saml_forge(
                 "strip_signature | downgrade_sig_alg | swap_key_info | "
                 "inject_nameid_comment | inject_nameid_attribute | "
                 "xsw1..xsw8 | xxe_external_entity | xxe_parameter_entity | "
-                "xxe_bounded_expansion"
+                "xxe_bounded_expansion | build_logout_request"
             ),
         ),
     ],
@@ -724,11 +726,20 @@ def saml_forge(
             help="Depth for xxe_bounded_expansion (clamped to 2..5 to avoid genuine DoS).",
         ),
     ] = 4,
+    name_id: Annotated[
+        str | None,
+        typer.Option("--name-id", help="Target NameID for build_logout_request."),
+    ] = None,
+    session_index: Annotated[
+        str | None,
+        typer.Option("--session-index", help="Optional SessionIndex for build_logout_request."),
+    ] = None,
 ) -> None:
     """Forge a malicious SAML Response variant or an XXE-flavoured AuthnRequest."""
     from .saml.forge import (
         SAMLForgeError,
         XSW_VARIANTS,
+        build_logout_request,
         downgrade_sig_alg,
         inject_nameid_attribute_comment,
         inject_nameid_comment,
@@ -801,6 +812,29 @@ def saml_forge(
             iss, acs, dest = _require_xxe_params()
             out = xxe_bounded_expansion(
                 issuer=iss, acs_url=acs, destination=dest, depth=expansion_depth
+            )
+        elif attack == "build_logout_request":
+            missing = [
+                n
+                for n, v in (
+                    ("--issuer", issuer),
+                    ("--destination", destination),
+                    ("--name-id", name_id),
+                )
+                if not v
+            ]
+            if missing:
+                typer.secho(
+                    f"error: build_logout_request requires {', '.join(missing)}",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+            out = build_logout_request(
+                issuer=issuer,  # type: ignore[arg-type]
+                destination=destination,  # type: ignore[arg-type]
+                name_id=name_id,  # type: ignore[arg-type]
+                session_index=session_index,
             )
         else:
             typer.secho(f"unknown attack {attack!r}", fg=typer.colors.RED, err=True)

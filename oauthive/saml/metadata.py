@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import defusedxml.ElementTree as DET
@@ -41,6 +42,7 @@ class SingleSignOnService:
 class KeyDescriptor:
     use: str  # 'signing', 'encryption', or '' (both)
     x509_pem: str  # PEM-formatted cert
+    encryption_methods: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -56,6 +58,10 @@ class EntityDescriptor:
     want_assertions_signed: bool | None = None
     metadata_signed: bool = False
     raw_xml: bytes = b""
+    valid_until: datetime | None = None
+    # The URL oauthive fetched this document from, when applicable.
+    # None if the metadata was loaded from a file.
+    source_url: str | None = None
 
     def sso_bindings(self) -> list[str]:
         return sorted({s.binding for s in self.sso_services})
@@ -69,9 +75,20 @@ class EntityDescriptor:
     def encryption_certs(self) -> list[str]:
         return [k.x509_pem for k in self.key_descriptors if k.use in ("encryption", "")]
 
+    def encryption_methods(self) -> list[str]:
+        algs: list[str] = []
+        for k in self.key_descriptors:
+            if k.use in ("encryption", ""):
+                algs.extend(k.encryption_methods)
+        return algs
 
-def parse_metadata(source: bytes | str) -> EntityDescriptor:
-    """Parse an EntityDescriptor. `source` may be bytes (XML) or a str path."""
+
+def parse_metadata(source: bytes | str, *, source_url: str | None = None) -> EntityDescriptor:
+    """Parse an EntityDescriptor. `source` may be bytes (XML) or a str path.
+
+    source_url, if provided, is stored on the resulting EntityDescriptor so
+    checks can reason about the fetch transport (e.g. flag http:// URLs).
+    """
     if isinstance(source, str):
         with open(source, "rb") as f:
             xml = f.read()
@@ -99,7 +116,18 @@ def parse_metadata(source: bytes | str) -> EntityDescriptor:
     if not entity_id:
         raise SAMLMetadataError("EntityDescriptor is missing entityID attribute")
 
-    md = EntityDescriptor(entity_id=entity_id, role="unknown", raw_xml=xml)
+    md = EntityDescriptor(
+        entity_id=entity_id, role="unknown", raw_xml=xml, source_url=source_url
+    )
+
+    valid_until_attr = root.get("validUntil")
+    if valid_until_attr:
+        try:
+            md.valid_until = datetime.fromisoformat(
+                valid_until_attr.replace("Z", "+00:00")
+            )
+        except ValueError:
+            md.valid_until = None
 
     # Detect top-level signature on the metadata itself.
     md.metadata_signed = (
@@ -173,7 +201,14 @@ def _populate_keys(md: EntityDescriptor, role: "etree._Element") -> None:
             continue
         b64 = "".join(cert_el.text.split())
         pem = _to_pem(b64)
-        md.key_descriptors.append(KeyDescriptor(use=use, x509_pem=pem))
+        methods = [
+            em.get("Algorithm")
+            for em in kd.findall("./md:EncryptionMethod", NAMESPACES)
+            if em.get("Algorithm")
+        ]
+        md.key_descriptors.append(
+            KeyDescriptor(use=use, x509_pem=pem, encryption_methods=methods)
+        )
 
 
 def _to_pem(b64: str) -> str:

