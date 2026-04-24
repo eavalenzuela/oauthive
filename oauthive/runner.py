@@ -170,6 +170,22 @@ async def run(ctx: Context, cfg: RunnerConfig) -> Report:
                 )
             )
             continue
+        # If the check requires mTLS-bound tokens but no client cert is
+        # configured, skip rather than letting the check fail at token
+        # exchange with a confusing TLS error.
+        if "mtls" in check.requires_capabilities:
+            client = ctx.client
+            if client is None or getattr(client, "mtls_cert", None) is None:
+                records.append(
+                    CheckRecord(
+                        id=check.id,
+                        name=check.name,
+                        status="skipped",
+                        duration_s=0.0,
+                        skip_reason="requires_mtls_cert (configure client.mtls_cert/mtls_key)",
+                    )
+                )
+                continue
         records.append(await _run_one(check, ctx, cfg.per_check_timeout_s))
 
     report = Report(

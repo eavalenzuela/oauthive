@@ -123,6 +123,8 @@ class OAuthClient:
         *,
         client_secret: str | None = None,
         http: httpx.AsyncClient | None = None,
+        mtls_cert: str | None = None,
+        mtls_key: str | None = None,
     ):
         if discovery.authorization_endpoint is None:
             raise ValueError("discovery doc has no authorization_endpoint")
@@ -130,8 +132,26 @@ class OAuthClient:
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
-        self._http = http or httpx.AsyncClient(timeout=15.0)
-        self._own_http = http is None
+        # When mTLS is configured, build our own httpx client with an SSL
+        # context that carries the client cert chain. If an external client
+        # was supplied, trust the caller. We still remember the cert tuple so
+        # the mtls-skip logic in the runner can see one is configured.
+        self.mtls_cert: tuple[str, str] | None = (
+            (mtls_cert, mtls_key) if mtls_cert and mtls_key else None
+        )
+        if http is None:
+            kwargs: dict[str, Any] = {"timeout": 15.0}
+            if self.mtls_cert is not None:
+                import ssl
+
+                ctx = ssl.create_default_context()
+                ctx.load_cert_chain(self.mtls_cert[0], self.mtls_cert[1])
+                kwargs["verify"] = ctx
+            self._http = httpx.AsyncClient(**kwargs)
+            self._own_http = True
+        else:
+            self._http = http
+            self._own_http = False
 
     async def aclose(self) -> None:
         if self._own_http:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oauthive"
-version = "0.0.1"
+version = "0.1.0"
 description = "OAuth 2.0 / OIDC / SAML 2.0 misconfiguration tester."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.42"]
+browser = ["playwright>=1.42", "pyotp>=2.9"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

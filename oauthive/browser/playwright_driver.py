@@ -49,7 +49,8 @@ class PlaywrightDriver(BrowserDriver):
     async def _try_autofill(self, page) -> None:
         """Best-effort credential fill. IdP login forms vary; operators wanting
         reliable automation should supply their own hook. We try a short list
-        of common selectors."""
+        of common selectors for username / password / submit, then attempt a
+        TOTP step when `totp_secret` is set."""
         if not self.username:
             return
         for selector in ("input[name=username]", "input[type=email]", "#username"):
@@ -71,3 +72,34 @@ class PlaywrightDriver(BrowserDriver):
                 break
             except Exception:
                 continue
+
+        if self.totp_secret:
+            # Some IdPs interstitial to a TOTP prompt. pyotp is an optional
+            # dep (bundled with the [browser] extra).
+            try:
+                import pyotp
+            except ImportError:  # pragma: no cover
+                return
+            code = pyotp.TOTP(self.totp_secret).now()
+            filled = False
+            for selector in (
+                "input[name=otp]",
+                "input[name=totp]",
+                "input[autocomplete=one-time-code]",
+                "input[type=tel][maxlength='6']",
+                "#otp",
+                "#totp",
+            ):
+                try:
+                    await page.fill(selector, code, timeout=2000)
+                    filled = True
+                    break
+                except Exception:
+                    continue
+            if filled:
+                for selector in ("button[type=submit]", "input[type=submit]", "#submit"):
+                    try:
+                        await page.click(selector, timeout=2000)
+                        break
+                    except Exception:
+                        continue
